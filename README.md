@@ -1,4 +1,3 @@
-# DIP_2026_16_5
 # Explainable Multi-Label CBIR for Aerial Images using Classical Computer Vision
 
 **ECE 501 Digital Image Processing, Ahmedabad University.** Project No. 16, Group No. 05.
@@ -8,7 +7,7 @@ This is a content-based image retrieval (CBIR) system for multi-label aerial ima
 
 All features are handcrafted Digital Image Processing descriptors implemented from first principles in NumPy. The project uses **no OpenCV, no scikit-image and no deep learning**.
 
-![System pipeline](results_charts/cbir_architecture.png)
+**Pipeline:** query image → pre-processing → 11 descriptors (colour, texture, shape, spatial) → per-cue similarity → learned weighted fusion → top-5 ranking → explanation (per-cue breakdown + heatmaps) → reliability check (return or flag).
 
 ---
 
@@ -24,6 +23,21 @@ All features are handcrafted Digital Image Processing descriptors implemented fr
 - **Uncertainty**: a reliability score built from score margins and cue disagreement flags doubtful results and queries, each with reason tags.
 - **Statistically tested evaluation**: Precision@K, Hit@5 and mAP, for the same scene class and for multi-label Jaccard thresholds 0.5 to 0.8, with paired-bootstrap confidence intervals.
 
+## Methodology (brief)
+
+| Phase | Method | Key details |
+|---|---|---|
+| 0. Dataset & protocol | Multi-label AID [1, 2] | 3,000 RGB images (600×600), 30 scene classes, 17 object labels (5.15 per image). 2,400 gallery / 600 query; 600 gallery images (20 per class, seed 42) held out for tuning. |
+| 1. Colour | RGB and HSV histograms [3] | RGB: 16 levels per channel → 4,096 bins. H–S: 30×32 = 960 bins (V dropped). L1-normalised, histogram intersection. |
+| 2. Texture | LBP [4], GLCM [5], Gabor [6] | Uniform LBP (59 bins). GLCM on 32 grey levels, d ∈ {1, 2}, 4 directions, 5 Haralick features (40-D). Gabor bank of 4 orientations × 3 frequencies via FFT, mean and std of response (24-D). |
+| 3. Shape | HOG [7], edge histogram [8], Hu moments [9] | HOG: 16×16 cells, 9 bins, 2×2 blocks, L2-Hys (1,764-D). Sobel edge density on a 4×4 grid (16-D). 7 log-scaled Hu invariants. |
+| 4. Spatial layout | Grid colour moments [10], grid intensity, CLD [8] | Mean and std of H, S, V on a 4×4 grid (96-D). Mean luminance per cell (16-D). 8×8 luma blocks → 2-D DCT-II, 4×4 low-frequency coefficients (16-D). |
+| Similarity | Per-cue scores in [0, 1] | Histograms: intersection Σ min(q, g). Vectors: gallery z-score, then (1 + cos)/2. |
+| 5A. Fusion | Learned weighted sum | S = Σ w_c S_c with w_c ≥ 0 and Σ w_c = 1. Weights maximise ½(mAP + P@10) on the validation split, using random simplex starts plus coordinate ascent (metrics are rank-based, so there is no gradient). |
+| 5B. Explainability | Score breakdown + occlusion [11] | Contributions w_c S_c sum exactly to S. Heatmaps: blank each cell of an 8×8 grid in both images, re-extract, re-score; maps are centred to remove the grey-patch bias. Checked with a deletion test. |
+| 5C. Uncertainty | Margins + cue disagreement | Top-1 margin, margin to the next rank, score stand-out, spread of cue percentiles, top-5 agreement → NumPy logistic model fitted on 1,800 non-tuned gallery queries. The least reliable 30% are flagged, with reason tags. |
+| 5D. Evaluation | P@K, Hit@5, mAP | Same-class and Jaccard ≥ 0.5 / 0.6 / 0.7 / 0.8 relevance; paired bootstrap (1,000 resamples) for confidence intervals. |
+
 ## Results (600 held-out queries vs 2,400 gallery images)
 
 | System | Same-class P@5 | Same-class mAP | Jaccard ≥ 0.5 P@5 | Jaccard ≥ 0.8 P@5 |
@@ -37,7 +51,53 @@ All features are handcrafted Digital Image Processing descriptors implemented fr
 - **Learned weights**: texture 0.43 (LBP alone 0.35), shape 0.24 (HOG 0.21), spatial 0.17, colour 0.16. Hu moments receive a weight of 0.
 - **Reliability flags**: flagged queries reach 31.4% P@5 against 67.2% for unflagged ones. Answering only the 30% of queries rated most reliable gives 84.6% P@5.
 
-![Results across phases](results_charts/precision_progression_phase1_to_5.png)
+### Single descriptors (same-class, %)
+
+| Descriptor | Dim. | P@5 | Hit@5 | mAP | Jaccard ≥ 0.5 P@5 | Learned weight |
+|---|---|---|---|---|---|---|
+| RGB histogram | 4096 | 42.03 | 69.00 | 18.79 | 81.63 | 0.094 |
+| HSV histogram | 960 | 38.87 | 64.67 | 17.32 | 80.07 | 0.063 |
+| LBP | 59 | 31.47 | 63.50 | 13.87 | 73.07 | 0.349 |
+| GLCM | 40 | 24.97 | 58.83 | 15.01 | 69.17 | 0.072 |
+| Gabor | 24 | 26.83 | 60.17 | 15.41 | 73.07 | 0.013 |
+| HOG | 1764 | 27.57 | 57.17 | 11.43 | 62.47 | 0.205 |
+| Edge histogram | 16 | 13.23 | 38.67 | 7.26 | 64.03 | 0.038 |
+| Hu moments | 7 | 11.03 | 36.33 | 7.07 | 63.90 | 0.000 |
+| Grid colour moments | 96 | 34.63 | 64.83 | 19.59 | 76.43 | 0.090 |
+| Grid intensity | 16 | 11.63 | 32.83 | 7.10 | 52.00 | 0.038 |
+| CLD | 16 | 14.73 | 38.00 | 8.89 | 60.70 | 0.040 |
+
+### Fusion progression (%)
+
+| System | P@5 | Hit@5 | mAP | Jaccard ≥ 0.5 P@5 | Jaccard ≥ 0.8 P@5 |
+|---|---|---|---|---|---|
+| Colour (RGB) | 42.03 | 69.00 | 18.79 | 81.63 | 40.13 |
+| + Texture | 48.57 | 75.17 | 25.60 | 83.33 | 41.70 |
+| + Shape | 50.97 | 78.17 | 26.16 | 84.70 | 42.50 |
+| + Spatial, equal weights (Phase 4) | 50.10 | 78.50 | 25.55 | 84.67 | 43.20 |
+| 4 cues, tuned | 50.23 | 78.83 | 25.31 | 84.50 | 43.17 |
+| 11 cues, equal | 50.57 | 79.83 | 25.70 | 84.53 | 43.03 |
+| **11 cues, tuned (final)** | **56.50** | **84.17** | **29.24** | **86.23** | **45.43** |
+
+### Final system vs Phase 4 at every relevance level (%, gain with 95% bootstrap CI)
+
+| Relevance | Chance P@5 | P@5 Phase 4 | P@5 final | P@5 gain | mAP Phase 4 | mAP final | mAP gain |
+|---|---|---|---|---|---|---|---|
+| Same class | 3.3 | 50.10 | 56.50 | +6.40 [4.73, 8.07] | 25.55 | 29.24 | +3.69 [2.91, 4.49] |
+| Jaccard ≥ 0.5 | 50.0 | 84.67 | 86.23 | +1.57 [0.47, 2.73] | 64.55 | 66.73 | +2.18 [1.61, 2.77] |
+| Jaccard ≥ 0.6 | 36.3 | 71.33 | 73.60 | +2.27 [0.97, 3.63] | 50.82 | 54.02 | +3.20 [2.67, 3.74] |
+| Jaccard ≥ 0.7 | 24.6 | 58.17 | 60.80 | +2.63 [1.13, 4.20] | 38.08 | 41.28 | +3.20 [2.70, 3.73] |
+| Jaccard ≥ 0.8 | 13.8 | 43.20 | 45.43 | +2.23 [0.73, 3.77] | 26.18 | 28.53 | +2.34 [1.81, 2.85] |
+
+### Explainability and reliability
+
+| Check | Result |
+|---|---|
+| Deletion test: score change after blanking 4 of 16 cells (30 pairs) | most supportive −0.069, random −0.083, least supportive −0.098; ordering holds in 30/30 pairs |
+| Flagged vs unflagged results (same-class precision) | 37.9% vs 64.5% (30% flagged, AUC 0.713) |
+| Flagged vs unflagged queries (P@5) | 31.4% vs 67.2% (30% flagged, AUC 0.782) |
+| Selective retrieval: queries answered → P@5 | 100% → 56.5%, 70% → 67.2%, 50% → 75.4%, 30% → 84.6% |
+| Per-class change vs Phase 4 (95% CI) | 17 classes significantly better, 3 significantly worse, 10 within noise |
 
 ## Repository structure
 
@@ -108,11 +168,9 @@ python final_system/cbir_system.py --one_per_class --grid 4   # one query per cl
 python generate_phase5_charts.py
 ```
 
-### Example output
+### Output
 
-`final_system/cbir_system.py` produces a figure and a JSON file for each query. They contain the top-5 images, the fused and per-cue scores, the region heatmaps, and the reliability of each result and of the query, with reason tags.
-
-![Final system output](final_system/outputs/cbir_airport_85.png)
+`final_system/cbir_system.py` writes a figure and a JSON file for each query. They contain the top-5 images, the fused and per-cue scores, the region heatmaps, and the reliability of each result and of the query, with reason tags.
 
 ## Limitations
 
